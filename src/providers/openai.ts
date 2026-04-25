@@ -15,6 +15,7 @@ import type {
   NormalizedContentBlock,
   NormalizedTool,
   NormalizedResponseBlock,
+  StreamEvent,
 } from './types.js'
 
 // --------------------------------------------------------------------------
@@ -116,6 +117,131 @@ export class OpenAIProvider implements LLMProvider {
 
     // Convert response back to normalized format
     return this.convertResponse(data)
+  }
+
+  async *createMessageStream(params: CreateMessageParams): AsyncGenerator<StreamEvent> {
+    const messages = this.convertMessages(params.system, params.messages)
+    const tools = params.tools ? this.convertTools(params.tools) : undefined
+
+    const body: Record<string, any> = {
+      model: params.model,
+      max_tokens: params.maxTokens,
+      messages,
+      stream: true,
+      stream_options: { include_usage: true },
+    }
+
+    if (tools && tools.length > 0) {
+      body.tools = tools
+    }
+
+    const response = await fetch(`${this.baseURL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    })
+
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => '')
+      const err: any = new Error(
+        `OpenAI API error: ${response.status} ${response.statusText}: ${errBody}`,
+      )
+      err.status = response.status
+      throw err
+    }
+
+    // Accumulate tool calls across chunks
+    const toolCallAccum: Record<number, { id: string; name: string; arguments: string }> = {}
+    let textContent = ''
+    let finishReason = 'stop'
+    let usage = { prompt_tokens: 0, completion_tokens: 0 }
+
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed || trimmed === 'data: [DONE]') continue
+        if (!trimmed.startsWith('data: ')) continue
+
+        let chunk: any
+        try { chunk = JSON.parse(trimmed.slice(6)) } catch { continue }
+
+        // Usage chunk (stream_options)
+        if (chunk.usage) {
+          usage = chunk.usage
+        }
+
+        const choice = chunk.choices?.[0]
+        if (!choice) continue
+
+        if (choice.finish_reason) finishReason = choice.finish_reason
+
+        const delta = choice.delta
+        if (!delta) continue
+
+        // Text delta
+        if (delta.content) {
+          textContent += delta.content
+          yield { type: 'text_delta', delta: delta.content }
+        }
+
+        // Tool call deltas
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index ?? 0
+            if (!toolCallAccum[idx]) {
+              toolCallAccum[idx] = { id: tc.id || '', name: tc.function?.name || '', arguments: '' }
+            }
+            if (tc.id) toolCallAccum[idx].id = tc.id
+            if (tc.function?.name) toolCallAccum[idx].name = tc.function.name
+            if (tc.function?.arguments) {
+              toolCallAccum[idx].arguments += tc.function.arguments
+              yield {
+                type: 'tool_use_delta',
+                id: toolCallAccum[idx].id,
+                name: toolCallAccum[idx].name,
+                input_delta: tc.function.arguments,
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Build normalized content
+    const content: CreateMessageResponse['content'] = []
+    if (textContent) content.push({ type: 'text', text: textContent })
+    for (const tc of Object.values(toolCallAccum)) {
+      let input: any = {}
+      try { input = JSON.parse(tc.arguments) } catch { /* empty */ }
+      content.push({ type: 'tool_use', id: tc.id, name: tc.name, input })
+    }
+    if (content.length === 0) content.push({ type: 'text', text: '' })
+
+    yield {
+      type: 'message_stop',
+      response: {
+        content,
+        stopReason: this.mapFinishReason(finishReason),
+        usage: {
+          input_tokens: usage.prompt_tokens,
+          output_tokens: usage.completion_tokens,
+        },
+      },
+    }
   }
 
   // --------------------------------------------------------------------------

@@ -1,4 +1,58 @@
-# Open Agent SDK (TypeScript)
+# Open Agent SDK (Fork)
+
+> This is a fork of [@codeany/open-agent-sdk](https://github.com/codeany-ai/open-agent-sdk-typescript) (v0.2.0), maintained for [FamilyToDo](https://github.com/jiangjiax/FamilyToDo) project use.
+
+## Why this fork exists
+
+The upstream `@codeany/open-agent-sdk` published version 0.2.1 to npm with a breaking change: it **removed support for OpenAI-compatible APIs** (`apiType: 'openai-completions'`), making it Anthropic-only.
+
+Our project FamilyToDo uses **Kimi (Moonshot) API**, which is OpenAI-compatible. After upgrading to the npm version, the AI agent stopped working entirely — the SDK silently fails when calling a non-Anthropic API because it now hardcodes the Anthropic SDK client internally.
+
+This fork preserves v0.2.0, the last version that supports both:
+- **Anthropic API** (`apiType: 'anthropic-messages'`)
+- **OpenAI-compatible APIs** (`apiType: 'openai-completions'`) — works with Kimi, DeepSeek, Qwen, OpenAI, etc.
+
+## How to install
+
+```bash
+npm install github:jiangjiax/open-agent-sdk
+```
+
+## Usage with Kimi (Moonshot) API
+
+```typescript
+import { createAgent } from '@codeany/open-agent-sdk';
+
+const agent = createAgent({
+  apiType: 'openai-completions',
+  model: 'moonshot-v1-8k',
+  apiKey: 'your-kimi-api-key',
+  baseURL: 'https://api.moonshot.cn/v1',
+  tools: [...],
+  systemPrompt: '...',
+});
+
+for await (const event of agent.query('你好')) {
+  // handle events
+}
+```
+
+## Differences from upstream
+
+| | Upstream (npm 0.2.1) | This fork (v0.2.0) |
+|---|---|---|
+| Anthropic API | Yes | Yes |
+| OpenAI-compatible API | **No** | **Yes** |
+| `apiType` option | Removed | Supported |
+| `sessionId` / `persistSession` | Removed | Supported |
+| `permissionMode` | Removed | Supported |
+
+## Credits
+
+All credit to the original authors at [CodeAny](https://github.com/codeany-ai). This fork exists solely because the npm package removed a feature we depend on.
+
+---
+
 
 [![npm version](https://img.shields.io/npm/v/@codeany/open-agent-sdk)](https://www.npmjs.com/package/@codeany/open-agent-sdk)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)

@@ -60,6 +60,7 @@ export type SDKMessage =
   | SDKStatusMessage
   | SDKTaskNotificationMessage
   | SDKRateLimitEvent
+  | SDKTextDeltaMessage
 
 export interface SDKAssistantMessage {
   type: 'assistant'
@@ -70,6 +71,12 @@ export interface SDKAssistantMessage {
     content: ContentBlock[]
   }
   parent_tool_use_id?: string | null
+}
+
+/** Emitted for each text chunk during streaming. */
+export interface SDKTextDeltaMessage {
+  type: 'text_delta'
+  delta: string
 }
 
 export interface SDKToolResultMessage {

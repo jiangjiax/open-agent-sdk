@@ -25,6 +25,7 @@ import type {
   CreateMessageResponse,
   NormalizedMessageParam,
   NormalizedTool,
+  StreamEvent,
 } from './providers/types.js'
 import {
   estimateMessagesTokens,
@@ -40,6 +41,7 @@ import {
 } from './utils/compact.js'
 import {
   withRetry,
+  withRetryStream,
   isPromptTooLongError,
 } from './utils/retry.js'
 import { getSystemContext, getUserContext } from './utils/context.js'
@@ -270,31 +272,39 @@ export class QueryEngine {
       this.turnCount++
       turnsRemaining--
 
-      // Make API call with retry via provider
+      // Make API call with streaming via provider
       let response: CreateMessageResponse
       const apiStart = performance.now()
+      const streamParams = {
+        model: this.config.model,
+        maxTokens: this.config.maxTokens,
+        system: systemPrompt,
+        messages: apiMessages,
+        tools: tools.length > 0 ? tools : undefined,
+        thinking:
+          this.config.thinking?.type === 'enabled' &&
+          this.config.thinking.budgetTokens
+            ? {
+                type: 'enabled',
+                budget_tokens: this.config.thinking.budgetTokens,
+              }
+            : undefined,
+      }
       try {
-        response = await withRetry(
-          async () => {
-            return this.provider.createMessage({
-              model: this.config.model,
-              maxTokens: this.config.maxTokens,
-              system: systemPrompt,
-              messages: apiMessages,
-              tools: tools.length > 0 ? tools : undefined,
-              thinking:
-                this.config.thinking?.type === 'enabled' &&
-                this.config.thinking.budgetTokens
-                  ? {
-                      type: 'enabled',
-                      budget_tokens: this.config.thinking.budgetTokens,
-                    }
-                  : undefined,
-            })
-          },
+        let finalResponse: CreateMessageResponse | undefined
+        for await (const event of withRetryStream(
+          () => this.provider.createMessageStream(streamParams),
           undefined,
           this.config.abortSignal,
-        )
+        )) {
+          if (event.type === 'text_delta') {
+            yield { type: 'partial_message', partial: { type: 'text', text: event.delta } }
+          } else if (event.type === 'message_stop') {
+            finalResponse = event.response
+          }
+        }
+        if (!finalResponse) throw new Error('Stream ended without message_stop')
+        response = finalResponse
       } catch (err: any) {
         // Handle prompt-too-long by compacting
         if (isPromptTooLongError(err) && !this.compactState.compacted) {

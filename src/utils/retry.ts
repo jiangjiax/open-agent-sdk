@@ -94,8 +94,37 @@ export async function withRetry<T>(
 }
 
 /**
- * Check if an error is a "prompt too long" error.
+ * Execute a streaming generator function with retries.
+ * On retryable errors, restarts the generator from scratch.
  */
+export async function* withRetryStream<T>(
+  fn: () => AsyncGenerator<T>,
+  config: RetryConfig = DEFAULT_RETRY_CONFIG,
+  abortSignal?: AbortSignal,
+): AsyncGenerator<T> {
+  let lastError: any
+
+  for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
+    if (abortSignal?.aborted) throw new Error('Aborted')
+
+    try {
+      yield* fn()
+      return
+    } catch (err: any) {
+      lastError = err
+
+      if (!isRetryableError(err, config) || attempt === config.maxRetries) {
+        throw err
+      }
+
+      const delay = getRetryDelay(attempt, config)
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+  }
+
+  throw lastError
+}
+
 export function isPromptTooLongError(err: any): boolean {
   if (err?.status === 400) {
     const message = err?.error?.error?.message || err?.message || ''

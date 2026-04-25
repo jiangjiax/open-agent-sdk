@@ -73,6 +73,16 @@ export type NormalizedResponseBlock =
   | { type: 'tool_use'; id: string; name: string; input: any }
 
 // --------------------------------------------------------------------------
+// Streaming
+// --------------------------------------------------------------------------
+
+/** Events emitted during a streaming response. */
+export type StreamEvent =
+  | { type: 'text_delta'; delta: string }
+  | { type: 'tool_use_delta'; id: string; name: string; input_delta: string }
+  | { type: 'message_stop'; response: CreateMessageResponse }
+
+// --------------------------------------------------------------------------
 // Provider Interface
 // --------------------------------------------------------------------------
 
@@ -80,6 +90,12 @@ export interface LLMProvider {
   /** The API type this provider implements. */
   readonly apiType: ApiType
 
-  /** Send a message and get a response. */
+  /** Send a message and get a complete response. */
   createMessage(params: CreateMessageParams): Promise<CreateMessageResponse>
+
+  /**
+   * Send a message and stream the response as events.
+   * Yields StreamEvents; the final event is always `message_stop`.
+   */
+  createMessageStream(params: CreateMessageParams): AsyncGenerator<StreamEvent>
 }
