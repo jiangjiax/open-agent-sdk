@@ -1,0 +1,162 @@
+/**
+ * Context Compression / Auto-Compaction
+ *
+ * Summarizes long conversation histories when context window fills up.
+ * Three-tier system:
+ * 1. Auto-compact: triggered when tokens exceed threshold
+ * 2. Micro-compact: cache-aware per-request optimization
+ * 3. Session memory compaction: consolidates across sessions
+ */
+import { estimateMessagesTokens, getAutoCompactThreshold, } from './tokens.js';
+/**
+ * Create initial auto-compact state.
+ */
+export function createAutoCompactState() {
+    return {
+        compacted: false,
+        turnCounter: 0,
+        consecutiveFailures: 0,
+    };
+}
+/**
+ * Check if auto-compaction should trigger.
+ */
+export function shouldAutoCompact(messages, model, state) {
+    if (state.consecutiveFailures >= 3)
+        return false;
+    const estimatedTokens = estimateMessagesTokens(messages);
+    const threshold = getAutoCompactThreshold(model);
+    return estimatedTokens >= threshold;
+}
+/**
+ * Compact conversation by summarizing with the LLM.
+ *
+ * Sends the entire conversation to the LLM for summarization,
+ * then replaces the history with a compact summary.
+ */
+export async function compactConversation(provider, model, messages, state) {
+    try {
+        // Strip images before compacting to save tokens
+        const strippedMessages = stripImagesFromMessages(messages);
+        // Build compaction prompt
+        const compactionPrompt = buildCompactionPrompt(strippedMessages);
+        const response = await provider.createMessage({
+            model,
+            maxTokens: 8192,
+            system: 'You are a conversation summarizer. Create a detailed summary of the conversation that preserves all important context, decisions made, files modified, tool outputs, and current state. The summary should allow the conversation to continue seamlessly.',
+            messages: [
+                {
+                    role: 'user',
+                    content: compactionPrompt,
+                },
+            ],
+        });
+        const summary = response.content
+            .filter((b) => b.type === 'text')
+            .map((b) => b.text)
+            .join('\n');
+        // Replace messages with summary
+        const compactedMessages = [
+            {
+                role: 'user',
+                content: `[Previous conversation summary]\n\n${summary}\n\n[End of summary - conversation continues below]`,
+            },
+            {
+                role: 'assistant',
+                content: 'I understand the context from the previous conversation. I\'ll continue from where we left off.',
+            },
+        ];
+        return {
+            compactedMessages,
+            summary,
+            state: {
+                compacted: true,
+                turnCounter: state.turnCounter,
+                consecutiveFailures: 0,
+            },
+        };
+    }
+    catch (err) {
+        return {
+            compactedMessages: messages,
+            summary: '',
+            state: {
+                ...state,
+                consecutiveFailures: state.consecutiveFailures + 1,
+            },
+        };
+    }
+}
+/**
+ * Strip images from messages for compaction safety.
+ */
+function stripImagesFromMessages(messages) {
+    return messages.map((msg) => {
+        if (typeof msg.content === 'string')
+            return msg;
+        const filtered = msg.content.filter((block) => {
+            return block.type !== 'image';
+        });
+        return { ...msg, content: filtered.length > 0 ? filtered : '[content removed for compaction]' };
+    });
+}
+/**
+ * Build compaction prompt from messages.
+ */
+function buildCompactionPrompt(messages) {
+    const parts = ['Please summarize this conversation:\n'];
+    for (const msg of messages) {
+        const role = msg.role === 'user' ? 'User' : 'Assistant';
+        if (typeof msg.content === 'string') {
+            parts.push(`${role}: ${msg.content.slice(0, 5000)}`);
+        }
+        else if (Array.isArray(msg.content)) {
+            const texts = [];
+            for (const block of msg.content) {
+                if (block.type === 'text') {
+                    texts.push(block.text.slice(0, 3000));
+                }
+                else if (block.type === 'tool_use') {
+                    texts.push(`[Tool: ${block.name}]`);
+                }
+                else if (block.type === 'tool_result') {
+                    const content = typeof block.content === 'string'
+                        ? block.content.slice(0, 1000)
+                        : '[tool result]';
+                    texts.push(`[Tool Result: ${content}]`);
+                }
+            }
+            if (texts.length > 0) {
+                parts.push(`${role}: ${texts.join('\n')}`);
+            }
+        }
+    }
+    return parts.join('\n\n');
+}
+/**
+ * Micro-compact: optimize messages by truncating large tool results
+ * to fit within token budgets.
+ */
+export function microCompactMessages(messages, maxToolResultChars = 50000) {
+    return messages.map((msg) => {
+        if (typeof msg.content === 'string')
+            return msg;
+        if (!Array.isArray(msg.content))
+            return msg;
+        const content = msg.content.map((block) => {
+            if (block.type === 'tool_result' && typeof block.content === 'string') {
+                if (block.content.length > maxToolResultChars) {
+                    return {
+                        ...block,
+                        content: block.content.slice(0, maxToolResultChars / 2) +
+                            '\n...(truncated)...\n' +
+                            block.content.slice(-maxToolResultChars / 2),
+                    };
+                }
+            }
+            return block;
+        });
+        return { ...msg, content };
+    });
+}
+//# sourceMappingURL=compact.js.map

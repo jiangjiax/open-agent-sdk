@@ -1,0 +1,102 @@
+/**
+ * LLM Provider Abstraction Types
+ *
+ * Defines a provider interface that normalizes API differences between
+ * Anthropic Messages API and OpenAI Chat Completions API.
+ *
+ * Internally the SDK uses Anthropic-like message format as the canonical
+ * representation. Providers convert to/from their native API format.
+ */
+export type ApiType = 'anthropic-messages' | 'openai-completions';
+export interface CreateMessageParams {
+    model: string;
+    maxTokens: number;
+    system: string;
+    messages: NormalizedMessageParam[];
+    tools?: NormalizedTool[];
+    thinking?: {
+        type: string;
+        budget_tokens?: number;
+    };
+}
+/**
+ * Normalized message format (Anthropic-like).
+ * This is the internal representation used throughout the SDK.
+ */
+export interface NormalizedMessageParam {
+    role: 'user' | 'assistant';
+    content: string | NormalizedContentBlock[];
+}
+export type NormalizedContentBlock = {
+    type: 'text';
+    text: string;
+} | {
+    type: 'tool_use';
+    id: string;
+    name: string;
+    input: any;
+} | {
+    type: 'tool_result';
+    tool_use_id: string;
+    content: string;
+    is_error?: boolean;
+} | {
+    type: 'image';
+    source: any;
+} | {
+    type: 'thinking';
+    thinking: string;
+};
+export interface NormalizedTool {
+    name: string;
+    description: string;
+    input_schema: {
+        type: 'object';
+        properties: Record<string, any>;
+        required?: string[];
+    };
+}
+export interface CreateMessageResponse {
+    content: NormalizedResponseBlock[];
+    stopReason: 'end_turn' | 'max_tokens' | 'tool_use' | string;
+    usage: {
+        input_tokens: number;
+        output_tokens: number;
+        cache_creation_input_tokens?: number;
+        cache_read_input_tokens?: number;
+    };
+}
+export type NormalizedResponseBlock = {
+    type: 'text';
+    text: string;
+} | {
+    type: 'tool_use';
+    id: string;
+    name: string;
+    input: any;
+};
+/** Events emitted during a streaming response. */
+export type StreamEvent = {
+    type: 'text_delta';
+    delta: string;
+} | {
+    type: 'tool_use_delta';
+    id: string;
+    name: string;
+    input_delta: string;
+} | {
+    type: 'message_stop';
+    response: CreateMessageResponse;
+};
+export interface LLMProvider {
+    /** The API type this provider implements. */
+    readonly apiType: ApiType;
+    /** Send a message and get a complete response. */
+    createMessage(params: CreateMessageParams): Promise<CreateMessageResponse>;
+    /**
+     * Send a message and stream the response as events.
+     * Yields StreamEvents; the final event is always `message_stop`.
+     */
+    createMessageStream(params: CreateMessageParams): AsyncGenerator<StreamEvent>;
+}
+//# sourceMappingURL=types.d.ts.map
